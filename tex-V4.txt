@@ -1,0 +1,462 @@
+\documentclass[10pt, conference, letterpaper]{IEEEtran}
+
+% --- Pacotes Básicos e Idioma ---
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[brazilian]{babel}
+\usepackage{amsmath, amssymb, amsfonts}
+\usepackage{amssymb, amsfonts} 
+\usepackage{graphicx}
+\usepackage{url}
+\usepackage{cite}
+\usepackage{booktabs}
+
+% --- Pacotes para Algoritmos e Pseudocódigos ---
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+
+
+%Pacote de diagramas
+\usepackage{tikz}
+\usetikzlibrary{shapes, arrows.meta, positioning}
+
+%Pacote para gráficos
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+
+% --- Configurações de Hifenização e Ajustes ---
+\hyphenation{op-tical net-works semi-conduc-tor}
+
+\begin{document}
+
+% --- Título do Trabalho ---
+\title{Otimização do Algoritmo de Dijkstra Aplicado a Redes de Transporte Urbano com Janelas de Espera Dinâmicas}
+
+% --- Autores ---
+\author{
+    \IEEEauthorblockN{Matheus Gouveia Purcino e Gabriel Lazarini de Lima Ribeiro}
+    \IEEEauthorblockA{Instituto de Engenharia de Computação \\
+    Universidade Federal de Itajubá -- UNIFEI\\
+    Itajubá, MG, Brasil \\
+    Email: d2024006907@unifei.edu.br}
+}
+
+\maketitle
+
+% =================================================================
+% 1. RESUMO (ABSTRACT)
+% =================================================================
+\begin{abstract}
+O problema do caminho mínimo em grafos (\textit{Shortest Path Problem} - SPP) é um pilar fundamental no desenvolvimento de sistemas de transporte inteligentes e logística urbana. Embora o algoritmo clássico de Dijkstra forneça uma solução exata em complexidade de tempo assintoticamente ótima para grafos estáticos com pesos não negativos, sua aplicabilidade direta em cenários dinâmicos reais é limitada. Redes de tráfego urbano são inerentemente governadas por restrições temporais discretas e periódicas, tais como ciclos de semáforos inteligentes e congestionamentos sazonais, cuja dinâmica pode ser descrita por meio de aritmética modular. Este trabalho apresenta uma variante otimizada do algoritmo de Dijkstra que incorpora uma função de custo temporal discreta, fundamentada em uma tabela de parâmetros semafóricos avaliada via aritmética modular, diretamente no processo de relaxação das arestas. O método proposto elimina a necessidade de recomputação completa do grafo a cada alteração de estado da rede. Resultados experimentais, obtidos por meio de um simulador nativo em C++ de alto desempenho com topologia de grade urbana de 50 mil nós, indicam que o Dijkstra estático falha em prever até 56 minutos de atrasos acumulados em rotas de alta densidade (erro relativo de até 2,4\%), enquanto o TDSP proposto captura fielmente as penalidades temporais. Adicionalmente, a arquitetura orientada a dados manteve o \textit{overhead} computacional estrutural em aproximadamente 60\%, operando em tempo real com processamento de malhas de 100 mil nós em menos de 30 milissegundos.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Algoritmo de Dijkstra, Grafos Dinâmicos, Engenharia de Tráfego, Otimização Combinatória, Janelas de Espera, Aritmética Modular.
+\end{IEEEkeywords}
+
+% =================================================================
+% 2. INTRODUÇÃO
+% =================================================================
+\section{Introdução}
+\IEEEPARstart{A}{ infraestrutura} de transporte nas metrópoles contemporâneas enfrenta o desafio crônico do adensamento populacional e da saturação das vias expressas. A otimização do fluxo de veículos e a minimização dos tempos de deslocamento não apenas reduzem custos operacionais na cadeia logística, mas também mitigam a emissão de poluentes e o desgaste da malha viária urbana. Nesse contexto, os Sistemas de Transporte Inteligentes (ITS, do inglês \textit{Intelligent Transportation Systems}) dependem criticamente de algoritmos de roteamento eficientes e capazes de reagir a perturbações dinâmicas na topologia da rede.
+
+Do ponto de vista da teoria dos grafos, uma rede de transporte urbano é comumente modelada como um grafo direcionado $G = (V, A)$, onde os vértices $V$ representam as interseções ou pontos de coleta, e as arestas $A$ representam as vias de conexão. O Algoritmo de Dijkstra clássico determina o caminho ponderado mais curto entre um vértice de origem e todos os demais vértices, assumindo que os pesos das arestas (custos de deslocamento) permanecem estáticos ao longo do tempo. Contudo, em cenários reais, o tempo necessário para transitar por uma determinada aresta $e \in A$ é uma função não linear dependente do instante de chegada do veículo ao vértice inicial daquela aresta. Esse fenômeno decorre da existência de janelas de espera dinâmicas, induzidas por sinalizações semafóricas cíclicas, cruzamentos ferroviários ou gargalos de tráfego intermitentes.
+
+Abordagens tradicionais para resolver o problema de caminhos mínimos dependentes do tempo (\textit{Time-Dependent Shortest Path} - TDSP) frequentemente recorrem a funções de custo contínuas ou à recomputação periódica do grafo a partir de atualizações de telemetria. Todavia, a discretização dessas restrições por meio de aritmética modular oferece um arcabouço matemático computacionalmente mais enxuto para modelar restrições periódicas. Falhas em considerar as penalidades impostas por essas janelas de espera durante a fase de relaxação do algoritmo resultam em rotas subótimas e subestimação sistemática dos tempos de chegada.
+
+\subsection{Definição do Problema}
+O problema central abordado nesta pesquisa reside na ineficiência dos algoritmos de caminhos mínimos tradicionais em absorver flutuações temporais discretas e cíclicas sem incorrer em sobrecarga computacional proibitiva (alto custo de processamento \textit{CPU-bound}). Formalmente, define-se uma rede de transporte temporal como um grafo direcionado estendido:
+\begin{equation}
+    G_T = (V, A, w, \delta, S)
+    \label{eq:grafo_temporal}
+\end{equation}
+onde $V$ é o conjunto de vértices (interseções), $A$ é o conjunto de arestas (vias), $w: A \to \mathbb{R}^+$ é a função de custo estático de fluxo livre, $\delta: A \times \mathbb{R}_{\geq 0} \to \mathbb{R}_{\geq 0}$ é a função de atraso temporal dependente do instante de chegada, e $S \in \mathbb{R}^{k \times 3}$ é a tabela de parâmetros semafóricos, onde cada linha $S[j] = (C_j, g_j, r_j)$ armazena o ciclo total, o tempo de verde e o tempo de vermelho do semáforo $j$, respectivamente, com $k$ sendo o número total de interseções semaforizadas e $g_j + r_j = C_j$.
+
+Quando um veículo atinge um vértice $v_i$ no instante $t$, o peso real da aresta subsequente $e_{ij}$ não é meramente a distância física ou o tempo de trânsito em fluxo livre, mas sim a soma desse tempo com o atraso $\delta(e_{ij}, t)$ induzido pela janela de bloqueio ativa em $t$. A modelagem inadequada dessa penalidade temporal resulta em uma quebra de consistência na previsão de rotas adaptativas para frotas comerciais.
+
+\subsection{Objetivos}
+O objetivo geral deste trabalho consiste em desenvolver, implementar e avaliar uma variante do algoritmo de Dijkstra otimizada para grafos dinâmicos com restrições temporais discretas, voltada para aplicações de logística urbana sob condições de tráfego pesado. Para alcançar o objetivo geral, definem-se os seguintes objetivos específicos:
+\begin{itemize}
+    \item Formular matematicamente a dinâmica das janelas de espera utilizando aritmética modular e uma tabela de parâmetros semafóricos;
+    \item Modificar o mecanismo de relaxação de arestas do algoritmo de Dijkstra para integrar a função de custo temporal discreta sem comprometer a estrutura assintótica da \textit{min-priority queue};
+    \item Desenvolver um ambiente de simulação computacional sintético para modelar malhas urbanas com diferentes densidades de tráfego;
+    \item Avaliar comparativamente o desempenho da variante proposta em relação ao algoritmo clássico, mapeando métricas de tempo de execução e precisão empírica da estimativa do tempo de viagem.
+\end{itemize}
+
+\subsection{Hipótese}
+A inclusão de uma função de custo temporal discreta --- baseada em uma tabela de parâmetros semafóricos $S$ e avaliada em tempo de execução via aritmética modular --- diretamente no operador de relaxação das arestas do algoritmo de Dijkstra produz estimativas de tempo de viagem expressivamente mais realistas do que o Dijkstra estático. Ao ignorar atrasos semafóricos, o modelo estático subestima o tempo real gerando lacunas absolutas graves em operações logísticas, enquanto o método modular proposto mantém o custo computacional sob controle na mesma ordem de complexidade assintótica $O((m + n) \log m)$.
+
+\subsection{Organização do Artigo}
+O restante deste documento está estruturado da seguinte forma: A Seção~\ref{sec:revisao} apresenta a revisão bibliográfica e a análise crítica dos trabalhos relacionados. A Seção~\ref{sec:metodo} detalha a metodologia de modelagem do grafo, a formulação matemática da função de custo e a proposta algorítmica. Na Seção~\ref{sec:resultados}, são expostos e discutidos os resultados empíricos obtidos por meio do simulador em C++, analisando o impacto logístico absoluto e a escalabilidade computacional. Por fim, a Seção~\ref{sec:conclusao} encerra o artigo delineando conclusões e direções futuras.
+
+% =================================================================
+% 3. REVISÃO BIBLIOGRÁFICA E ESTADO DA ARTE
+% =================================================================
+\section{Revisão Bibliográfica e Estado da Arte}
+\label{sec:revisao}
+
+A modelagem de caminhos mínimos em redes de transporte urbano impõe desafios algorítmicos severos devido à natureza dinâmica e periódica dos gargalos de tráfego. Para contextualizar a contribuição deste trabalho, esta seção revisa a literatura sobre o Problema de Caminho Mínimo Dependente do Tempo (TDSP), a separação de custos em arestas dinâmicas e a propriedade FIFO.
+
+\subsection{Redes com Janelas de Tempo e Atrasos Periódicos}
+Enquanto o Algoritmo de Dijkstra clássico opera sob a premissa de custos de arestas constantes, a dinâmica urbana exige a modelagem do tempo de viagem como uma variável dependente do instante de partida. A incorporação de restrições de semáforos foi classicamente modelada por Chen e Yang \cite{chen2000}, que propuseram a representação de interseções por meio de uma sequência repetida de janelas de tempo. Neste arcabouço, um nó correspondente a um cruzamento só permite a travessia de determinadas rotas durante janelas ativas específicas, resultando em um algoritmo de complexidade $O(r \times n^3)$, onde $r$ é o número de janelas distintas.
+
+Mais recentemente, a modelagem de restrições periódicas evoluiu para incorporar o fluxo de tráfego por meio da teoria de curvas cumulativas. Ji et al. \cite{ji2026} propuseram um Algoritmo de Dijkstra Dependente do Tempo que introduz uma matriz de atraso de fila periódica. A abordagem baseia-se no cálculo do instante de chegada ao cruzamento utilizando aritmética modular para rastrear a posição do veículo no ciclo semafórico. A Equação \ref{eq:fase_semaforo} formaliza o instante de exibição do sinal $t_{ij}^p$ quando um veículo chega a uma interseção $j$, partindo de $i$:
+\begin{equation}
+    t_{ij}^p = [t_{ij}^0 + t_{ij}] \bmod (C_j)
+    \label{eq:fase_semaforo}
+\end{equation}
+onde $C_j$ é o tempo de ciclo do semáforo, e $t_{ij}^0$ é o estado do sinal no momento da partida.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.48\textwidth]{arrival_departure_ji.png}
+    \caption{Diagrama de Chegada e Partida baseado em curvas cumulativas, demonstrando a formação e dissipação de filas em função do status do sinal (Adaptado de \cite{ji2026}).}
+    \label{fig:curvas_cumulativas}
+\end{figure}
+
+\subsection{Separação de Custos Estáticos e Dinâmicos}
+A literatura recente sobre logística automatizada e redes de carga oferece um paralelo matemático poderoso para o transporte urbano. Li et al. \cite{li2025} demonstram a subotimalidade da aplicação do Dijkstra estático em redes com conectividade dinâmica, provando que pesos pré-calculados (mesmo considerando piores casos) falham em garantir o caminho ótimo no tempo.
+
+Para contornar essa limitação sem incorrer em penalidades de processamento, a função de custo de uma aresta $(u,v)$ no instante $t$ deve ser explicitamente dividida em duas componentes:
+\begin{equation}
+    w(u,v,S,t) = M(u,v) + D(u,v,S,t)
+    \label{eq:custo_separado}
+\end{equation}
+onde $M(u,v)$ representa o \textit{Move Cost} (Custo de Movimentação --- custo físico em fluxo livre, inerentemente estático) e $D(u,v,S,t)$ representa o \textit{Synchronization Delay} (Atraso de Sincronização --- atraso estritamente dependente do estado $S$ e do instante $t$) \cite{li2025}. A vantagem dessa separação é permitir que a relaxação da aresta na fila de prioridades calcule o atraso sob demanda.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.45\textwidth]{expanded_network.png}
+    \caption{Expansão topológica de uma interseção em subnós, transformando movimentos de conversão em arestas explícitas \cite{chen2000}.}
+    \label{fig:expanded_network}
+\end{figure}
+
+\subsection{A Propriedade FIFO em Redes Dinâmicas}
+A garantia de otimalidade de algoritmos do tipo Dijkstra em redes dinâmicas repousa sobre a propriedade FIFO (\textit{First-In-First-Out}). Esta propriedade assegura que, dadas duas partidas $t_A$ e $t_B$ de um nó $u$, se $t_A < t_B$, a chegada ao nó $v$ não violará a precedência temporal \cite{li2025}. Em ambientes de tráfego denso com ciclos semafóricos, a fila impõe um comportamento estritamente FIFO no nível do grupamento de faixas, mantendo o problema solúvel em tempo polinomial \cite{ji2026}.
+
+\subsection{Lacunas Identificadas e Contribuição}
+Embora os trabalhos revisados abordem aspectos complementares do TDSP, nenhum deles integra simultaneamente (i) aritmética modular para modelagem de ciclos semafóricos periódicos, (ii) engenharia de \textit{cache} orientada a dados para grafos esparsos e (iii) simplificação empírica da fila de prioridade em uma única solução coesa. A presente pesquisa visa preencher essa lacuna integrativa, combinando a modelagem modular com a engenharia de algoritmos validada por Zhan e Noon \cite{zhan1998} e Larkin et al. \cite{larkin2014}.
+
+\subsection{Comparativo do Estado da Arte}
+A Tabela \ref{tab:estado_arte} sintetiza o tratamento das restrições temporais pelos trabalhos seminais, justificando a abordagem metodológica proposta nesta pesquisa.
+
+\begin{table}[htbp]
+\centering
+\caption{Comparativo das Abordagens para SPP em Redes com Restrições Temporais}
+\label{tab:estado_arte}
+\begin{tabular}{@{}p{1.8cm}p{1.8cm}p{1.4cm}p{1.0cm}p{1.4cm}@{}}
+\toprule
+\textbf{Método / Autores} & \textbf{Modelagem do Atraso} & \textbf{Grafo Dinâmico?} & \textbf{Custo (Aresta)} & \textbf{Compl. Total} \\ \midrule
+Dijkstra Tradicional & Inexistente & Não & $O(1)$ & $O(m{+}n\log n)$ \\
+Chen \& Yang \cite{chen2000} & Lista de Janelas ($r$) & Sim (TD) & $O(\log r)$ & $O(r \times n^3)$ \\
+Li et al. \cite{li2025} & $M{+}D(u,v,t)$ & Sim (Virtual) & $O(1)$ & $O(m{+}n\log n)$ \\
+Ji et al. \cite{ji2026} & Matrizes Modulares & Sim (Expansão) & Dinâmico & Não especif. \\
+\textbf{Mét. Proposto} & $\boldsymbol{\delta(t) \bmod C_j}$ & \textbf{Sim (\textit{In-place})} & $\boldsymbol{O(1)}$ & $\boldsymbol{O((m{+}n)\log m)}$ \\ \bottomrule
+\end{tabular}
+\end{table}
+
+% =================================================================
+% 4. MÉTODO DE TRABALHO
+% =================================================================
+\section{Método de Trabalho}
+\label{sec:metodo}
+
+A viabilidade de algoritmos de roteamento em sistemas de transporte inteligentes não depende apenas da correção assintótica do modelo matemático, mas fundamentalmente da Engenharia de Algoritmos (\textit{Algorithm Engineering}) aplicada à sua implementação. Grafos de tráfego urbano são caracteristicamente esparsos. Sob essas condições, o limitante de desempenho do Algoritmo de Dijkstra desloca-se da contagem de operações lógicas para a latência de acesso à memória e a ocorrência de falhas de \textit{cache} (\textit{cache misses}) nos níveis L1 e L2 do processador.
+
+\subsection{Representação Topológica via \textit{Forward Star}}
+Implementações convencionais orientadas a objetos modelam grafos por meio de listas de adjacência baseadas em ponteiros (ex: listas encadeadas). Como os nós são alocados de forma dispersa no \textit{heap} da memória, a iteração sobre as arestas vizinhas de um vértice obriga a CPU a realizar saltos não contíguos, invalidando as linhas de \textit{cache} pré-carregadas. Zhan e Noon \cite{zhan1998} demonstraram empiricamente em redes rodoviárias reais que o uso da estrutura \textit{Forward Star} reduz drasticamente o tempo de execução.
+
+Adotando este paradigma, o método modela a rede de transporte em dois \textit{arrays} densos paralelos:
+\begin{enumerate}
+    \item Um vetor de nós $V$, onde $V[i]$ armazena o índice inicial de suas arestas de saída no vetor $E$;
+    \item Um vetor de arestas $E$, ordenado pela origem, onde cada posição contém o vértice de destino ($v$), o custo estático de fluxo livre ($M$) e o identificador do semáforo (\texttt{ID\_eq}).
+\end{enumerate}
+
+Essa abordagem garante que, ao visitar um nó $u$, todas as suas arestas e custos de penalidade sejam carregados em um único \textit{fetch} para a memória \textit{cache}, operando em tempo $O(1)$ real em nível de \textit{hardware}.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.48\textwidth]{forward_star.png}
+    \caption{Layout de memória da estrutura \textit{Forward Star}, garantindo contiguidade espacial e minimização de \textit{cache misses}.}
+    \label{fig:forward_star}
+\end{figure}
+
+\subsection{Fila de Prioridade Baseada em \textit{Lazy Insertion}}
+A teoria de grafos postula que a estrutura ideal para o Dijkstra é a \textit{Fibonacci Heap}. Contudo, estudos empíricos provam que o massivo \textit{overhead} de manipulação de ponteiros as tornam ineficientes para grafos esparsos \cite{larkin2014}. Neste método, adota-se uma \textit{Binary Heap} sobre vetores contíguos. Para mitigar o custo de atualizar chaves existentes (\textit{decrease-key}), utiliza-se a técnica de \textit{Lazy Insertion} \cite{larkin2014}.
+
+Quando o custo para atingir um nó $v$ é reduzido, insere-se uma nova tupla $(t_{novo}, v)$. A inconsistência é tratada de forma passiva: ao extrair o elemento mínimo da \textit{heap}, verifica-se se o tempo de chegada extraído é superior ao melhor tempo já consolidado. Se for, a tupla é imediatamente descartada em $O(1)$.
+
+\begin{figure}[htbp]
+    \centering
+    \resizebox{\columnwidth}{!}{%
+    \begin{tikzpicture}[
+        node distance=1.2cm and 1.5cm,
+        box/.style={draw, rectangle, align=center, minimum width=2.5cm, minimum height=0.8cm, font=\scriptsize},
+        decision/.style={draw, diamond, align=center, aspect=2, font=\scriptsize, inner sep=1pt},
+        arrow/.style={->, >=Stealth, thick},
+        stale/.style={draw, rectangle, rounded corners, fill=black!10, align=center, font=\scriptsize, dashed}
+    ]
+    \node[box] (relax) {Relax Edge $(u,v)$ \\ Found shorter path ($t=10$)};
+    \node[box, right=of relax] (push) {\textbf{Lazy Insertion:} \\ Push $(10, v)$ to Min-Heap};
+    \node[box, below=of push] (heap) {\textbf{Min-Heap State} \\ Contains duplicates: \\ $(10, v)$ and old $(15, v)$};
+    \node[box, left=of heap] (pop1) {Extract-Min returns $(10, v)$ \\ $\tau[v] \leftarrow 10$};
+    \node[box, below=of pop1] (pop2) {Later: \\ Extract-Min returns $(15, v)$};
+    \node[decision, right=of pop2] (check) {Is $t_{extracted} > \tau[v]$? \\ ($15 > 10$)};
+    \node[stale, right=of check] (discard) {Discard in $\mathcal{O}(1)$ \\ (Stale Node)};
+    \draw[arrow] (relax) -- (push);
+    \draw[arrow] (push) -- (heap);
+    \draw[arrow] (heap) -- (pop1);
+    \draw[arrow] (pop1) -- (pop2);
+    \draw[arrow] (pop2) -- (check);
+    \draw[arrow] (check) -- node[above, font=\scriptsize] {Yes} (discard);
+    \end{tikzpicture}%
+    }
+    \caption{Mecanismo de \textit{Lazy Insertion} em uma \textit{Binary Min-Heap}. Duplicatas são inseridas e as entradas obsoletas descartadas no momento da extração.}
+    \label{fig:lazy_heap}
+\end{figure}
+
+\subsection{Mecanismo de Relaxação no Algoritmo TDSP}
+O Algoritmo \ref{alg:dijkstra_otimizado} consolida as escolhas de engenharia arquitetural detalhadas. A função de penalização temporal por janelas semafóricas é integrada como um cálculo aritmético e sem ramificações preditivas profundas, avaliada no exato momento da expansão da aresta, garantindo a propriedade FIFO sem reprocessar o estado global da rede.
+
+\begin{algorithm}[htbp]
+\caption{Dijkstra Dinâmico Orientado a Cache com \textit{Lazy Insertion}}
+\label{alg:dijkstra_otimizado}
+\begin{algorithmic}[1]
+\Require \textit{Arrays} $V$ e $E$ (\textit{Forward Star}), Tabela de Parâmetros Semafóricos $S$, Origem $s$, Tempo Base $t_0$
+\Ensure \textit{Array} de tempos mínimos de chegada $\tau[V]$
+\State $\tau \gets$ preencher com $\infty$
+\State $\tau[s] \gets t_0$
+\State \textit{MinBinaryHeap} $PQ$
+\State $PQ.\text{push}(\{t_0, s\})$
+\While{$PQ \neq \emptyset$}
+    \State $\{t_{atual}, u\} \gets PQ.\text{pop}()$
+    
+    \If{$t_{atual} > \tau[u]$} \Comment{Descarte \textit{Lazy Insertion} \cite{larkin2014}}
+        \State \textbf{continue}
+    \EndIf
+    
+    \State $inicio \gets V[u].start$ \Comment{Localidade espacial \cite{zhan1998}}
+    \State $fim \gets V[u+1].start$
+    
+    \For{$i = inicio \textbf{ to } fim - 1$}
+        \State $e \gets E[i]$
+        \If{$e.ID\_eq \neq \emptyset$}
+            \State $atraso \gets \text{ModuloWaitTime}(t_{atual}, e.ID\_eq, S)$
+        \Else
+            \State $atraso \gets 0$
+        \EndIf
+        
+        \State $t_{novo} \gets t_{atual} + e.M + atraso$
+        
+        \If{$t_{novo} < \tau[e.v]$}
+            \State $\tau[e.v] \gets t_{novo}$
+            \State $PQ.\text{push}(\{t_{novo}, e.v\})$
+        \EndIf
+    \EndFor
+\EndWhile
+\State \Return $\tau$
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Formalização da Função de Atraso Temporal}
+\label{sec:modulo_wait}
+Dado o instante de chegada $t$ a um vértice $v_j$, a função calcula o atraso de espera $\delta_j(t)$ imposto pela fase vermelha, utilizando operações de aritmética modular. Seja $S[j] = (C_j,\, g_j,\, r_j)$ a entrada da tabela, onde $C_j = g_j + r_j$. Define-se a fase corrente como $\varphi_j(t) = t \bmod C_j$. O atraso é dado por:
+\begin{equation}
+    \delta_j(t) =
+    \begin{cases}
+        0, & \text{se } \varphi_j(t) < g_j \\
+        C_j - \varphi_j(t), & \text{se } \varphi_j(t) \geq g_j 
+    \end{cases}
+    \label{eq:atraso_modular}
+\end{equation}
+
+A função satisfaz a propriedade FIFO pois, a transição vermelho$\to$verde gera um salto positivo no instante de partida que restaura a monotonia \cite{ji2026}. O Algoritmo \ref{alg:modulo_wait} formaliza essa lógica em pseudocódigo com complexidade $O(1)$.
+
+\begin{algorithm}[htbp]
+\caption{\texttt{ModuloWaitTime} --- Cálculo do Atraso Semafórico Modular}
+\label{alg:modulo_wait}
+\begin{algorithmic}[1]
+\Require Instante de chegada $t$, Semáforo $j$, Tabela $S$
+\Ensure Atraso de espera $\delta \geq 0$
+\State $(C_j,\, g_j,\, r_j) \gets S[j]$
+\State $\varphi \gets t \bmod C_j$
+\If{$\varphi < g_j$}
+    \State \Return $0$
+\Else
+    \State \Return $C_j - \varphi$
+\EndIf
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Análise de Complexidade}
+\label{sec:complexidade}
+Seja $|V| = n$ e $|A| = m$. O tamanho máximo da fila de prioridade é limitado por $m$ (devido à inserção dupla do \textit{Lazy Insertion}). Inserções e extrações custam total de $O(m \log m)$. O cálculo de atraso é $O(1)$ por aresta. A complexidade total é:
+\begin{equation}
+    T(n, m) = O(m \log m)
+    \label{eq:complexidade}
+\end{equation}
+Para grafos esparsos ($\bar{d} \in [2, 4]$), tem-se $m = O(n)$, logo a complexidade converge para $O(n \log n)$, estritamente equivalente ao Dijkstra clássico. O \textit{overhead} das operações modulares manifesta-se apenas como uma constante linear agregada.
+
+% ================= FIM DA PARTE 1 =================
+% =================================================================
+% 5. RESULTADOS EXPERIMENTAIS E DISCUSSÃO
+% =================================================================
+\section{Resultados Experimentais e Discussão}
+\label{sec:resultados}
+
+Para validar a eficácia da inclusão de restrições modulares no mecanismo de relaxação, foi desenvolvido um ambiente de simulação e \textit{benchmarking} nativo em linguagem C++ (padrão C++17), compilado com a \textit{flag} de otimização de alta performance \texttt{-O3} do compilador GCC. O gerador de instâncias produz grafos sintéticos baseados em topologias de grade (\textit{grid graph}), nas quais cada nó possui grau de adjacência entre 2 e 4, simulando cruzamentos urbanos.
+
+Os pesos estáticos das arestas $w(u,v)$ são amostrados de uma distribuição uniforme $\mathcal{U}(1, 10)$ minutos, representando tempos de travessia em fluxo livre. Para cada interseção semaforizada, os parâmetros da tabela $S$ são gerados estocasticamente: o ciclo total $C_j \sim \mathcal{U}(1, 2)$ minutos, e a fração de verde $g_j / C_j \sim \mathcal{U}(0{,}4;\, 0{,}6)$, refletindo configurações típicas de semáforos urbanos. Aproximadamente 60\% dos nós possuem semáforos atribuídos. O código-fonte do simulador e do gerador de instâncias está disponível publicamente\footnote{\url{https://github.com/matheusPurcino/tdsp-dijkstra-simulator.git} --- repositório a ser publicado na versão final.}.
+
+A densidade veicular é incorporada ao modelo por meio de um fator multiplicativo sobre os pesos estáticos de fluxo livre. A avaliação empírica foi dividida em duas métricas principais: \textit{Precisão de Estimativa} (comparação entre o tempo calculado pelo Dijkstra estático e o tempo real capturado pelo TDSP) e \textit{Desempenho Computacional} (medido pelo tempo médio de processamento da CPU em 35 rodadas, com 5 de \textit{warm-up} descartadas). Todos os experimentos foram conduzidos sem mecanismos de isolamento de CPU (\textit{core pinning}).
+
+\subsection{Precisão Logística: O Impacto do Atraso Absoluto}
+O algoritmo de Dijkstra estático calcula o caminho de menor custo considerando exclusivamente os pesos de fluxo livre, ignorando os atrasos impostos por semáforos. Em contrapartida, o modelo TDSP integra as penalidades semafóricas no instante de relaxação. A Tabela \ref{tab:tempo_viagem} apresenta os dados obtidos pela simulação em um grafo de grade com 50.176 nós ($224 \times 224$).
+
+\begin{table}[htbp]
+\centering
+\caption{Tempo de Viagem: Dijkstra Estático vs. TDSP Proposto}
+\label{tab:tempo_viagem}
+\begin{tabular}{@{}cccc@{}}
+\toprule
+\textbf{\begin{tabular}[c]{@{}c@{}}Densidade\\ (Veíc./h)\end{tabular}} & \textbf{\begin{tabular}[c]{@{}c@{}}Dijkstra Estático\\ (min)\end{tabular}} & \textbf{\begin{tabular}[c]{@{}c@{}}TDSP Proposto\\ (min)\end{tabular}} & \textbf{\begin{tabular}[c]{@{}c@{}}Subestimação\\ (\%)\end{tabular}} \\ \midrule
+500  & 1752.7 & 1796.4 & 2.4 \\
+750  & 1928.0 & 1973.9 & 2.3 \\
+1000 & 2103.3 & 2145.2 & 2.0 \\
+1250 & 2278.6 & 2325.3 & 2.0 \\
+1500 & 2453.8 & 2502.8 & 2.0 \\
+1750 & 2629.1 & 2677.8 & 1.8 \\
+2000 & 2804.4 & 2852.9 & 1.7 \\
+2250 & 2979.6 & 3029.1 & 1.6 \\
+2500 & 3154.9 & 3201.7 & 1.5 \\
+2750 & 3330.2 & 3372.0 & 1.2 \\
+3000 & 3505.5 & 3550.5 & 1.3 \\
+3250 & 3680.7 & 3726.8 & 1.2 \\
+3500 & 3856.0 & 3904.5 & 1.2 \\
+3750 & 4031.3 & 4075.6 & 1.1 \\
+4000 & 4206.6 & 4262.3 & 1.3 \\ \bottomrule
+\end{tabular}
+\end{table}
+
+Os tempos reportados refletem a travessia completa de uma rede sintética de grande extensão, cujas rotas ótimas atravessam centenas de interseções. A Figura \ref{fig:grafico_viagem} ilustra visualmente a divergência.
+
+Embora a subestimação percentual do Dijkstra estático pareça modesta à primeira vista (variando de 1,1\% a 2,4\%), a análise do erro \textit{absoluto} revela uma falha crítica para o planejamento logístico. No cenário de maior densidade (4000 veículos/hora), o Dijkstra estático prevê uma viagem de 4206,6 minutos. Contudo, ao contabilizar a dinâmica semafórica, o TDSP revela que o tempo real da mesma rota será de 4262,3 minutos. Trata-se de uma subestimação de \textbf{quase 56 minutos} (cerca de 1 hora) de atrasos acumulados em semáforos vermelhos que o modelo clássico ignorou. 
+
+Em sistemas de logística \textit{just-in-time} ou roteamento de frotas comerciais, falhar na previsão de chegada por uma hora compromete janelas de entrega, gera multas contratuais e inviabiliza a alocação de docas. Isso demonstra que algoritmos que ignoram restrições periódicas são inadequados para operações urbanas pesadas, mesmo que o erro relativo pareça diluído pelo tempo total da viagem.
+
+\begin{figure}[htbp]
+    \centering
+    \begin{tikzpicture}
+        \begin{axis}[
+            width=\columnwidth,
+            xlabel={Densidade de Tráfego (Veículos/Hora)},
+            ylabel={Atraso Oculto Ignorado (minutos)},
+            xmin=500, xmax=4000,
+            ymin=40, ymax=60,
+            xtick={500,1000,1500,2000,2500,3000,3500,4000},
+            xticklabel style={rotate=45, anchor=north east},
+            ymajorgrids=true,
+            grid style=dashed,
+            every axis plot/.append style={thick, color=red, mark=*}
+        ]
+        
+        % Coordenadas representam (TDSP - Estático) em minutos
+        \addplot coordinates {
+            (500,43.7) (750,45.9) (1000,41.9) (1250,46.7) (1500,49.0) (1750,48.7) (2000,48.5) (2250,49.5) (2500,46.8) (2750,41.8) (3000,45.0) (3250,46.1) (3500,48.5) (3750,44.3) (4000,55.7)
+        };
+        \end{axis}
+    \end{tikzpicture}
+    \caption{Atraso absoluto oculto (TDSP - Estático) em função da densidade. O gráfico isola e evidencia o tempo exato de penalidade semafórica que o Dijkstra clássico falha em prever, culminando em quase 1 hora de erro nas rotas mais densas.}
+    \label{fig:grafico_viagem}
+\end{figure}
+
+\subsection{Escalabilidade e Desempenho Computacional}
+O principal desafio em abordagens dinâmicas é evitar a explosão do tempo de processamento. A Tabela \ref{tab:tempo_cpu} consolida as médias e desvios-padrão dos tempos de execução da CPU ($\mu \pm \sigma$) capturados durante a exploração de grafos com topologia escalável (de 10 mil a $\sim$100 mil nós). Para garantir rigor estatístico, a ordem de execução entre os algoritmos foi estritamente alternada a cada rodada, impedindo o favorecimento sistemático por \textit{cache warming}.
+
+\begin{table}[htbp]
+\centering
+\caption{Tempo Médio de CPU em Função do Tamanho do Grafo ($\mu \pm \sigma$)}
+\label{tab:tempo_cpu}
+\begin{tabular}{@{}ccccc@{}}
+\toprule
+\textbf{\begin{tabular}[c]{@{}c@{}}Nós \\ Reais\end{tabular}} &
+\textbf{\begin{tabular}[c]{@{}c@{}}Arestas \\ ($\times 10^3$)\end{tabular}} &
+\textbf{\begin{tabular}[c]{@{}c@{}}Estático \\ (ms)\end{tabular}} &
+\textbf{\begin{tabular}[c]{@{}c@{}}TDSP \\ (ms)\end{tabular}} &
+\textbf{\begin{tabular}[c]{@{}c@{}}Overhead \\ (\%)\end{tabular}} \\ \midrule
+10000 & 39  & $1{,}24 \pm 0{,}43$  & $2{,}08 \pm 0{,}25$   & 67.5 \\
+19881 & 78  & $2{,}70 \pm 0{,}46$  & $4{,}47 \pm 0{,}50$   & 65.5 \\
+29929 & 119 & $4{,}01 \pm 0{,}41$  & $6{,}84 \pm 0{,}45$   & 70.4 \\
+40000 & 159 & $5{,}80 \pm 0{,}41$  & $9{,}37 \pm 0{,}49$   & 61.4 \\
+49729 & 198 & $7{,}36 \pm 0{,}48$  & $11{,}70 \pm 0{,}47$  & 59.0 \\
+59536 & 237 & $11{,}32 \pm 4{,}63$ & $17{,}56 \pm 5{,}88$  & 55.1 \\
+69696 & 277 & $21{,}85 \pm 7{,}42$ & $34{,}58 \pm 14{,}49$ & 58.2 \\
+79524 & 316 & $12{,}36 \pm 1{,}19$ & $19{,}58 \pm 1{,}40$  & 58.4 \\
+90000 & 358 & $17{,}14 \pm 3{,}40$ & $24{,}91 \pm 2{,}70$  & 45.3 \\
+99856 & 398 & $15{,}84 \pm 0{,}59$ & $24{,}83 \pm 0{,}65$  & 56.8 \\ \bottomrule
+\end{tabular}
+\end{table}
+
+A Figura \ref{fig:grafico_cpu} projeta os resultados. A arquitetura orientada a dados assegurou tempos de execução em regime praticamente instantâneo. O processamento da malha mais densa (cerca de 100 mil vértices e 398 mil arestas) ocorreu em aproximadamente 15,8 ms para o Dijkstra estático e \textbf{24,8 ms para o TDSP proposto}.
+
+O \textit{overhead} médio computacional para a incorporação da inteligência modular foi de aproximadamente 59,8\%. Embora este valor percentual indique o custo real da sobrecarga aritmética do operador módulo em C++, os \textbf{tempos absolutos de processamento provam a extrema eficiência do método}. Um algoritmo capaz de rotear dinamicamente 100 mil nós em menos de 30 milissegundos atende a todos os requisitos de tempo real de centrais de roteamento \textit{cloud-based}, validando a escolha arquitetural de preservar a \textit{binary heap} acoplada à matriz de vizinhança contígua.
+
+Nota-se uma oscilação na faixa de 70 mil nós ($\sigma$ mais elevados), o que é característico de interrupções de escalonamento do Sistema Operacional (\textit{context switches}) durante as rodadas ativas de \textit{benchmark}, comportamento normalizado nas instâncias subsequentes.
+
+\begin{figure}[htbp]
+    \centering
+    \begin{tikzpicture}
+        \begin{axis}[
+            width=\columnwidth,
+            xlabel={Tamanho Aproximado da Malha (Milhares de Nós)},
+            ylabel={Tempo de CPU (ms)},
+            xmin=10, xmax=100,
+            ymin=0, ymax=40,
+            xtick={10,20,30,40,50,60,70,80,90,100},
+            xticklabel style={rotate=45, anchor=north east},
+            legend pos=north west,
+            legend style={font=\scriptsize},
+            ymajorgrids=true,
+            grid style=dashed,
+            every axis plot/.append style={thick}
+        ]
+        \addplot[color=black, mark=*, mark options={scale=0.7}] coordinates {
+            (10,1.24) (20,2.70) (30,4.01) (40,5.80) (50,7.36) (60,11.32) (70,21.85) (80,12.36) (90,17.14) (100,15.84)
+        };
+        \addlegendentry{Dijkstra Estático}
+            
+        \addplot[color=purple, mark=diamond, mark options={scale=0.8}] coordinates {
+            (10,2.08) (20,4.47) (30,6.84) (40,9.37) (50,11.70) (60,17.56) (70,34.58) (80,19.58) (90,24.91) (100,24.83)
+        };
+        \addlegendentry{TDSP Proposto}
+        \end{axis}
+    \end{tikzpicture}
+    \caption{Escalabilidade computacional ($\mu$) em função do tamanho da malha. O TDSP resolve o problema em tempo real ($< 30$ ms para $100$k nós), absorvendo bem o \textit{overhead} estrutural de $\sim60\%$.}
+    \label{fig:grafico_cpu}
+\end{figure}
+
+\subsection{Limitações do Modelo}
+\label{sec:limitacoes}
+Três limitações principais deste estudo devem ser reconhecidas. Primeiro, o modelo assume ciclos semafóricos fixos, não contemplando semáforos adaptativos que ajustam seus tempos em resposta ao fluxo em tempo real. Segundo, a propriedade FIFO, pressuposto para a correção do Dijkstra, pode ser violada em cenários de congestionamento extremo onde o fluxo de chegada excede a capacidade da via. Terceiro, os grafos são sintéticos; a topologia de grade não representa a irregularidade geométrica de malhas viárias complexas de cidades reais. Adicionalmente, a simulação não modela explicitamente a formação de filas (interação dinâmica entre veículos).
+
+% =================================================================
+% 6. CONCLUSÃO E TRABALHOS FUTUROS
+% =================================================================
+\section{Conclusão e Trabalhos Futuros}
+\label{sec:conclusao}
+
+Este trabalho propôs, implementou e avaliou uma arquitetura algorítmica otimizada para o Problema de Caminho Mínimo Dependente do Tempo (TDSP), com foco na integração veloz de atrasos semafóricos em redes urbanas esparsas. A fundamentação teórica confirmou que algoritmos estáticos subestimam severamente penalidades intermitentes. 
+
+A avaliação empírica nativa em C++ provou a hipótese: embora o erro percentual da estimativa pareça diluído na duração total de rotas massivas ($\sim2,4\%$), em termos absolutos o Dijkstra estático ignora até 56 minutos de atrasos semafóricos. Esta lacuna de 1 hora na previsão de tempo real é crítica para qualquer cadeia de suprimentos operando com janelas \textit{just-in-time}. O algoritmo TDSP proposto captura fielmente essa matemática modular sem comprometer a estrutura do método.
+
+Computacionalmente, o uso combinado de ordenação contígua (\textit{Forward Star}) e tolerância de redundâncias via \textit{Lazy Insertion} isolou os gargalos de memória da CPU. Embora a inserção da lógica modular apresente um \textit{overhead} na faixa de 60\%, a otimização de \textit{hardware} reduziu a escala dos tempos totais para a casa dos milissegundos: o TDSP roteou grafos com 100.000 cruzamentos em menos de 30 ms. Isso assegura aderência da solução para servidores comerciais de alto tráfego.
+
+Como trabalhos futuros, sugere-se: (i) a ingestão de malhas viárias reais via API do \textit{OpenStreetMap}; (ii) a incorporação de semáforos adaptativos cujos ciclos variam sob demanda; (iii) a modelagem de congestionamento de filas; e (iv) a integração com modelos de \textit{Machine Learning} para inferência de fluxos em tempo real.
+
+% =================================================================
+% REFERÊNCIAS BIBLIOGRÁFICAS
+% =================================================================
+\bibliographystyle{IEEEtran}
+\bibliography{referencias}
+
+\end{document}
